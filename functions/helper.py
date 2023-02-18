@@ -627,8 +627,6 @@ class SpatialVineCoupla():
         #df_result["result"] = df_result["result"]
         df_result = df_result[~df_result['result'].isin(error_list)]
 
-        print("Final Result: " +
-              str(np.median(abs(result_list - self.dataset.df[self.dataset.variable]))))
         print("Number of errors: " + str(count))
         self.df_result = df_result
 
@@ -637,8 +635,8 @@ class SpatialVineCoupla():
               str(np.median(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
         print("Mean Absolute Error: " +
               str(np.mean(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
-        print("Mean Squared Error: " +
-              str(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2)))
+        print(
+            "Bias: " + str(np.mean(self.df_result[self.dataset.variable] - self.df_result["result"])))
         print("Root Mean Squared Error: " +
               str(np.sqrt(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2))))
 
@@ -667,6 +665,8 @@ class SpatialVineCoupla():
         # get current axes
         ax = plt.gca()
 
+        plt.clim(self.df_result[self.dataset.variable].min(
+        ), self.df_result[self.dataset.variable].max())
         plt.xlabel("x")
         plt.ylabel("y")
         plt.title("Prediction")
@@ -683,7 +683,8 @@ class SpatialVineCoupla():
     def plot_result_statistics(self):
         plt.scatter(
             self.df_result[self.dataset.variable], self.df_result["result"])
-        plt.plot([0, 2000], [0, 2000], 'r')
+        plt.plot([0, self.df_result[self.dataset.variable].max()], [
+                 0, self.df_result[self.dataset.variable].max()], 'r')
         plt.xlabel("Actual")
         plt.ylabel("Predicted")
         plt.title("Actual vs Predicted")
