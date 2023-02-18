@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,7 +7,12 @@ from scipy.spatial import distance_matrix
 from scipy import stats
 from scipy.stats import lognorm
 from scipy import integrate
+from tqdm import tqdm
+
 import pyvinecopulib as pv
+
+pd.options.mode.chained_assignment = None
+warnings.simplefilter('ignore', np.RankWarning)
 
 # Calculate rank of variable of interest
 
@@ -14,14 +20,19 @@ import pyvinecopulib as pv
 class DataSet:
     def __init__(self, df, variable_of_interest):
         self.df = df
-        self.number_of_stations = len(df)
+        self.num_stations = len(df)
         self.variable = variable_of_interest
         self.distance_array = None
         self.distance_df = None
+        self.list_of_indexes = None
         self.cutoff_value = None
         self.pairs_cutoff = None
         self.all_pairs = None
         self.neighbourhoods = None
+        self.neighbourhood_size = None
+        self.all_pairs_ln = None
+        self.neighbourhoods_ln = None
+        self.frozen_lognorm = None
 
     def add_rank(self):
         rank = self.df.rank()[self.variable]
@@ -37,16 +48,11 @@ class DataSet:
 
         list_of_indexes = np.argwhere(self.distance_array > 0)
 
-        # remove duplicate rows
-        list_nodupe = []
-        for row in list_of_indexes:
-            # ensure there are no duplicates
-            if (row[0] < row[1]):
-                list_nodupe.append(row)
-        len(list_nodupe)
+        self.list_of_indexes = list_of_indexes
 
         # now we are working with the whole dataset (not cutoff)
-        df_whole = pd.DataFrame(list_nodupe, columns=["index1", "index2"])
+        df_whole = pd.DataFrame(self.list_of_indexes,
+                                columns=["index1", "index2"])
 
         distance_value = []
 
@@ -71,14 +77,63 @@ class DataSet:
     # build the neighbourhood for each station
     def build_neighbourhoods(self, neighbourhood_size=20):
 
+        self.neighbourhood_size = neighbourhood_size
         neigh_list = []
-        for i in range(0, self.number_of_stations):
+        for i in range(0, self.num_stations):
             curr_df = self.all_pairs[self.all_pairs["index1"]
                                      == (i)].sort_values(by=['distance'])
             curr_df = curr_df.reset_index(drop=True)
             neigh_list.append(curr_df.head(neighbourhood_size))
 
         self.neighbourhoods = neigh_list
+
+    def add_lognormal(self):
+        #  build a log normal, so that we have a different representation
+        # of variable of interest for testing
+        # ppf(q, s, loc=0, scale=1)
+
+        ln_mean = np.mean(np.log(self.df[self.variable]))
+        ln_std = np.std(np.log(self.df[self.variable]))
+        ln_mean_exp = np.exp(ln_mean)
+
+        frozen_lognorm = lognorm(s=ln_std, scale=ln_mean_exp)
+        log_normal = frozen_lognorm.cdf(self.df[self.variable])
+        self.df["log_normal"] = log_normal
+        self.frozen_lognorm = frozen_lognorm
+
+    def construct_pairs_lognorm(self):
+
+        self.add_lognormal()
+        # now we are working with the whole dataset (not cutoff)
+        df_whole_ln = pd.DataFrame(
+            self.list_of_indexes, columns=["index1", "index2"])
+
+        distance_value = []
+        for _, row in df_whole_ln.iterrows():
+            distance_value.append(
+                self.distance_array[row["index1"]][row["index2"]])
+
+        df_whole_ln["ln1"] = list(
+            self.df["log_normal"][(df_whole_ln["index1"])])
+        df_whole_ln["ln2"] = list(
+            self.df["log_normal"][(df_whole_ln["index2"])])
+        df_whole_ln["distance"] = distance_value
+        df_whole_ln.head()
+
+        self.all_pairs_ln = df_whole_ln
+
+        # build the neighbourhood for each station with lognormal
+    def build_neighbourhoods_ln(self, neighbourhood_size=20):
+
+        self.neighbourhood_size = neighbourhood_size
+        neigh_list = []
+        for i in range(0, self.num_stations):
+            curr_df = self.all_pairs_ln[self.all_pairs_ln["index1"]
+                                        == (i)].sort_values(by=['distance'])
+            curr_df = curr_df.reset_index(drop=True)
+            neigh_list.append(curr_df.head(neighbourhood_size))
+
+        self.neighbourhoods_ln = neigh_list
 
 
 class SpatialCopula:
@@ -120,7 +175,7 @@ class SpatialCopula:
         # print(bins_data[0].rename(columns={"index1": "center_id", "index2": "neigh_id",
         #                                    "rank1": "center_rank", "rank2": "neigh_rank"}).head())
         self.bins_data = bins_data
-        print(f"Bin means: {self.bin_means_list}")
+        #print(f"Bin means: {self.bin_means_list}")
 
     def calculate_kendall(self):
 
@@ -270,8 +325,12 @@ class SpatialCopula:
     def next_copula(cls, self, num_bins=10, cutoff_value=1200, degree=1):
 
         next_neighbourhood = self.build_next_neighbourhood()
+        next_spatial_copula = cls(
+            self.dataset, next_neighbourhood, num_bins, cutoff_value)
+        next_spatial_copula.list_neigh_to_bin_mean()
+        next_spatial_copula.calculate_copulas()
 
-        return cls(self.dataset, next_neighbourhood, num_bins, cutoff_value)
+        return next_spatial_copula
 
     # build the next neighbourhood from the current neighbourhood
 
@@ -343,19 +402,20 @@ class SpatialCopula:
         return(list_neighbourhood_updated)
 
     # calculate the bins for the new neighbourhood
-    def list_neigh_to_bin_mean(self, list_neighbourhood_temp, cutoff_value_temp, num_bins=10, degree=1):
+
+    def list_neigh_to_bin_mean(self):
         df_whole_temp = pd.DataFrame()
-        for neigh in list_neighbourhood_temp:
+        for neigh in self.neighbourhoods:
             df_whole_temp = pd.concat(
                 [df_whole_temp, neigh], ignore_index=True)
 
         #cutoff_value_temp = 600
         df_whole_temp_cut = df_whole_temp[df_whole_temp["distance"]
-                                          < cutoff_value_temp]
+                                          < self.cutoff_value]
 
         #num_bins = 10
-        bin_values, _ = pd.cut(df_whole_temp_cut["distance"], bins=num_bins,
-                               labels=range(0, num_bins),
+        bin_values, _ = pd.cut(df_whole_temp_cut["distance"], bins=self.num_bins,
+                               labels=range(0, self.num_bins),
                                retbins=True)
 
         df_whole_temp_cut.loc[:, ("bins")] = list(bin_values)
@@ -365,7 +425,7 @@ class SpatialCopula:
         bins_data = []
         kendall_list = []
 
-        for i in range(0, num_bins):
+        for i in range(0, self.num_bins):
             bins_data.append(
                 df_whole_temp_cut[df_whole_temp_cut["bins"] == (i)])
             kendall_list.append(stats.kendalltau(df_whole_temp_cut[df_whole_temp_cut["bins"] == (i)]["rank1"],
@@ -373,317 +433,288 @@ class SpatialCopula:
 
         bin_means_list = np.concatenate((bin_means.values)).tolist()
 
-        model_predict, kendall_list_predict, bin_means_cut = fit_model_kendall(
-            bin_means_list, kendall_list, cutoff_value_temp, degree)
+        self.bins_data = bins_data
+        self.kendall_list = kendall_list
+        self.bin_means_list = bin_means_list
 
-        return(bins_data, bin_means_list, kendall_list_predict, model_predict, bin_means_cut, kendall_list)
-
-
-# new class spatial copula, which implements the step funciton and generates all couplas from the first one
-
-# calculate the copulas for the new neighbourhood
-def spcopula_step(list_neighbourhood_curr, bin_means_curr, cops_curr, model_curr, bin_means_cut_curr,
-                  distance_df, family_set, cutoff=600, num_bins=10, degree=3):
-
-    list_neighbourhood_next = build_next_neighbourhood(
-        list_neighbourhood_curr, bin_means_curr, cops_curr, model_curr, bin_means_cut_curr, distance_df)
-    bins_data_next, bin_means_list_next, kendall_list_predict_next, model_predict_next, bin_means_cut_next, kendall_list = list_neigh_to_bin_mean(
-        list_neighbourhood_next, cutoff, num_bins, degree)
-    cops_next = bins_to_cop(bins_data_next, family_set,
-                            kendall_list_predict_next, bin_means_cut_next)
-
-    return(list_neighbourhood_next, bin_means_list_next, cops_next, model_predict_next, bin_means_cut_next, kendall_list)
+        # fit the model to the kendall tau values
+        self.fit_model_kendall()
 
 
-def build_vine_copula(super_list_neighbourhood, super_bin_means_list, super_cops, super_model_list, super_bin_means_cut, super_kendall_list, distance_df, cutoff_list, num_bins_list, degree_list, family_set, neigh_size):
+# class spatial copula, which generates all couplas from the first one
+class SpatialVineCoupla():
+    def __init__(self, first_spatial_copula, dataset, num_copulas, num_bins_list, cutoff_list) -> None:
+        self.first_spatial_copula = first_spatial_copula
+        self.dataset = dataset
+        self.num_copulas = num_copulas
+        self.list_spatial_copulas = [first_spatial_copula]
+        self.neighbourhood_size = len(
+            self.first_spatial_copula.neighbourhoods[0])
+        self.sp_depth = self.num_copulas
+        self.num_stations = self.first_spatial_copula.dataset.num_stations
+        self.num_bins_list = num_bins_list
+        self.cutoff_list = cutoff_list
 
-    for i in range(1, neigh_size):
-        super_list_neighbourhood_temp, super_bin_means_list_temp, super_cops_temp, super_model_temp, super_bin_means_cut_temp, super_kendall_list_temp = \
-            spcopula_step(super_list_neighbourhood[i-1], super_bin_means_list[i-1],
-                          super_cops[i-1], super_model_list[i -
-                                                            1], super_bin_means_cut[i - 1],
-                          cutoff=cutoff_list[i], num_bins=num_bins_list[i],
-                          degree=degree_list[i], family_set=family_set, distance_df=distance_df)
+        self.build_vine_coupla(num_copulas=self.num_copulas)
 
-        super_list_neighbourhood.append(super_list_neighbourhood_temp)
-        super_bin_means_list.append(super_bin_means_list_temp)
-        super_cops.append(super_cops_temp)
-        super_model_list.append(super_model_temp)
-        super_bin_means_cut.append(super_bin_means_cut_temp)
-        super_kendall_list.append(super_kendall_list_temp)
-        print(i)
-    return(super_list_neighbourhood, super_bin_means_list, super_cops, super_model_list, super_bin_means_cut, super_kendall_list)
+        self.all_neighbourhoods = [
+            spatial_copula.neighbourhoods for spatial_copula in self.list_spatial_copulas]
+        self.all_copulas = [
+            spatial_copula.copulas for spatial_copula in self.list_spatial_copulas]
+        self.all_models = [
+            spatial_copula.predict for spatial_copula in self.list_spatial_copulas]
+        self.all_bin_means_cut = [
+            spatial_copula.bin_means_cut for spatial_copula in self.list_spatial_copulas]
 
+        self.distances_within_trees = self.distances_per_tree()
 
-def add_lognormal(df):
-    #  build a log normal, so that we have a different representation of zinc for testing
-    # ppf(q, s, loc=0, scale=1)
+    def build_vine_coupla(self, num_copulas):
+        for i in tqdm(range(1, num_copulas)):
+            current_spatial_copula = self.list_spatial_copulas[i-1]
+            num_bins = self.num_bins_list[i]
+            cutoff_value = self.cutoff_list[i]
 
-    ln_mean = np.mean(np.log(df["zinc"]))
-    ln_std = np.std(np.log(df["zinc"]))
-    ln_mean_exp = np.exp(ln_mean)
+            next_spatial_copula = SpatialCopula.next_copula(
+                current_spatial_copula, num_bins=num_bins, cutoff_value=cutoff_value)
+            self.list_spatial_copulas.append(next_spatial_copula)
+            #print("Copula", i, "done")
 
-    frozen_lognorm = lognorm(s=ln_std, scale=ln_mean_exp)
-    log_normal = frozen_lognorm.cdf(df["zinc"])
-    df["log_normal"] = log_normal
-    return(df, frozen_lognorm)
+    def distances_per_tree(self):
+        dist_df_list = []
+        i = self.neighbourhood_size
 
+        for list_neigh in self.all_neighbourhoods[0:self.sp_depth]:
+            temp_list = []
+            for neigh in list_neigh:
+                temp_list.append(list(neigh[0:i]["distance"]))
+            dist_df_list.append(pd.DataFrame(temp_list))
+            i -= 1
 
-def construct_pairs_lognorm(df):
-
-    df_coordinates = df[["x", "y"]]
-    distance_array = distance_matrix(df_coordinates, df_coordinates)
-    list_of_indexes = np.argwhere(distance_array > 0)
-
-    # now we are working with the whole dataset (not cutoff)
-    df_whole_ln = pd.DataFrame(list_of_indexes, columns=["index1", "index2"])
-
-    distance_value = []
-
-    for index, row in df_whole_ln.iterrows():
-        distance_value.append(distance_array[row["index1"]][row["index2"]])
-
-    df_whole_ln["ln1"] = list(df["log_normal"][(df_whole_ln["index1"])])
-    df_whole_ln["ln2"] = list(df["log_normal"][(df_whole_ln["index2"])])
-    df_whole_ln["distance"] = distance_value
-    df_whole_ln.head()
-
-    return(df_whole_ln)
-
-
-def distances_per_tree(super_list_neighbourhood, neigh_size, number_of_stations):
-    dist_df_list = []
-    i = neigh_size
-    spDepth = neigh_size
-    for list_neigh in super_list_neighbourhood[0:spDepth]:
-        temp_list = []
-        for neigh in list_neigh:
-            temp_list.append(list(neigh[0:i]["distance"]))
-        dist_df_list.append(pd.DataFrame(temp_list))
-        i -= 1
-
-    # calculate distances
-    h_temp_small = []
-    h_big = []
-    for i in range(number_of_stations):
-        for dataFrame in dist_df_list:
-            h_temp_small.append(dataFrame.iloc[i])
-        h_big.append(h_temp_small)
+        # calculate distances
         h_temp_small = []
+        h_big = []
+        for i in range(self.num_stations):
+            for dataframe in dist_df_list:
+                h_temp_small.append(dataframe.iloc[i])
+            h_big.append(h_temp_small)
+            h_temp_small = []
 
-    return (h_big)
+        distances_within_trees = h_big
+        return (distances_within_trees)
 
+    @staticmethod
+    def build_xvalue(n):
+        rat_temp = np.array([[1e-06, 1e-05, 1e-04, 1e-03]])
+        rat_temp2 = np.array([[x for x in range(1, 51)]])
+        rat = rat_temp.T*rat_temp2
+        rat_temp3 = np.array([x/n for x in range(1, n)])
+        rat_inv = 1-rat
+        rat_final = np.append(rat, rat_inv)
+        rat_final = np.append(rat_final, rat_temp3)
+        xvalue = np.sort(np.unique(rat_final.flatten()))
 
-def build_xvalue(n):
-    rat_temp = np.array([[1e-06, 1e-05, 1e-04, 1e-03]])
-    rat_temp2 = np.array([[x for x in range(1, 51)]])
-    rat = rat_temp.T*rat_temp2
-    rat_temp3 = np.array([x/n for x in range(1, n)])
-    rat_inv = 1-rat
-    rat_final = np.append(rat, rat_inv)
-    rat_final = np.append(rat_final, rat_temp3)
-    xvalue = np.sort(np.unique(rat_final.flatten()))
+        return xvalue
 
-    return xvalue
+    @staticmethod
+    def calc_hfunc_list(curr_lambda, copula1, copula2, u0temp):
+        hfunc_value = ((1 - curr_lambda) * copula1.hfunc1(u0temp))  \
+            + (curr_lambda * copula2.hfunc1(u0temp))
+        return hfunc_value
 
+    @staticmethod
+    def calc_pdf(curr_lambda, copula1, copula2, u0temp):
+        pdf_value = ((1 - curr_lambda) * copula1.pdf(u0temp))  \
+            + (curr_lambda * copula2.pdf(u0temp))
+        return pdf_value
 
-def calc_hfunc_list(curr_lambda, copula1, copula2, u0temp):
-    hfunc_value = ((1 - curr_lambda) * copula1.hfunc1(u0temp))  \
-        + (curr_lambda * copula2.hfunc1(u0temp))
-    return hfunc_value
+    def d_copula(self, rep_cond_var, h, nx):
+        l0 = np.zeros(nx)
+        u0 = rep_cond_var
 
+        for sp_tree in range(0, self.sp_depth):
+            u1 = []
+            curr_cops = self.all_copulas[sp_tree]
+            curr_model = self.all_models[sp_tree]
+            tmph = h[sp_tree]
+            for i in range(0, len(tmph)):
 
-def calc_pdf(curr_lambda, copula1, copula2, u0temp):
-    pdf_value = ((1 - curr_lambda) * copula1.pdf(u0temp))  \
-        + (curr_lambda * copula2.pdf(u0temp))
+                # calculate value to update l0
+                u0temp = u0[:, [0, i+1]]
 
-    return pdf_value
+                curr_distance = tmph[i]
+                # now we calculate the density of all pairs from u0temp
+                # we use the bins and appropriate copulas + lambdas
 
+                # check which bin the row belongs in
+                bin_result = SpatialCopula.distance_to_bin(
+                    curr_distance, self.all_bin_means_cut[sp_tree])
 
-def dCopula(repCondVar, spVine, spDepth, models, super_bin_means_cut, h, nx):
-    l0 = np.zeros(nx)
-    u0 = repCondVar
+                # calculate copulaidx and lambda
+                copulas_idx, curr_lambda = SpatialCopula.bin_to_copulas(
+                    bin_result,  self.all_bin_means_cut[sp_tree], curr_distance)
 
-    for spTree in range(0, spDepth):
-        u1 = []
-        curr_cops = spVine[spTree]
-        curr_model = models[spTree]
-        tmph = h[spTree]
-        for i in range(0, len(tmph)):
+                copula1, copula2 = curr_cops[copulas_idx[0]
+                                             ], curr_cops[copulas_idx[1]]
+                # update parameters
+                copula1.parameters = copula1.tau_to_parameters(
+                    np.maximum(0, curr_model(curr_distance)))
+                copula2.parameters = copula2.tau_to_parameters(
+                    np.maximum(0, curr_model(curr_distance)))
 
-            # calculate value to update l0
-            u0temp = u0[:, [0, i+1]]
+                # now use the copulas to calculate hfunc
+                pdf_value = SpatialVineCoupla.calc_pdf(
+                    curr_lambda, copula1, copula2, u0temp)
+                hfunc_value = SpatialVineCoupla.calc_hfunc_list(
+                    curr_lambda, copula1, copula2, u0temp)
 
-            curr_distance = tmph[i]
-            # now we calculate the density of all pairs from u0temp
-            # we use the bins and appropriate copulas + lambdas
+                l0 = l0 + np.log(pdf_value)
+                u1.append(hfunc_value)
 
-            # check which bin the row belongs in
-            bin_result = distance_to_bin(
-                curr_distance, super_bin_means_cut[spTree])
+            # now we want to calculate u1 from u0
+            u1 = np.array(u1)
+            u0 = u1.T
 
-            # calculate copulaidx and lambda
-            copulas_idx, curr_lambda = bin_to_copulas(
-                bin_result,  super_bin_means_cut[spTree], curr_distance)
+        return(np.exp(l0))
 
-            copula1, copula2 = curr_cops[copulas_idx[0]
-                                         ], curr_cops[copulas_idx[1]]
-            # update parameters
-            copula1.parameters = copula1.tau_to_parameters(
-                np.maximum(0, curr_model(curr_distance)))
-            copula2.parameters = copula2.tau_to_parameters(
-                np.maximum(0, curr_model(curr_distance)))
+    def cond_sp_vine(self, cond_var,  h, n=1000):
+        # cond_var is list neighbourhood
 
-            # now use the copulas to calculate hfunc
-            pdf_value = calc_pdf(curr_lambda, copula1, copula2, u0temp)
-            hfunc_value = calc_hfunc_list(
-                curr_lambda, copula1, copula2, u0temp)
+        xvalue = SpatialVineCoupla.build_xvalue(n)
+        nx = len(xvalue)
 
-            l0 = l0 + np.log(pdf_value)
-            u1.append(hfunc_value)
+        rep_cond_var = np.append(np.reshape(xvalue, (len(xvalue), 1)), np.repeat(
+            np.matrix(cond_var), nx, axis=0), axis=1)
 
-        # now we want to calculate u1 from u0
-        u1 = np.array(u1)
-        u0 = u1.T
+        density = self.d_copula(rep_cond_var, h, nx)
+        left = max(0, 2*density[0] - density[1])
+        right = max(0, 2*density[nx-1] - density[nx-2])
+        density_extended = np.append(np.append(left, density), right)
 
-    return(np.exp(l0))
+        return density_extended
 
+    def calculate_predictions(self):
 
-# to start with condSpVine we need the information contained in list_neighbourhood_ln and dist_df_list
-def condSpVine(condVar,  h, spVine, models, spDepth, super_bin_means_cut, n=1000):
-    # condVar is list neighbourhood
+        xvals = SpatialVineCoupla.build_xvalue(1000)
+        xvals_extended = np.append(np.append([0], xvals), [1])
 
-    xvalue = build_xvalue(n)
-    nx = len(xvalue)
+        density_list = []
+        integration_constant_list = []
+        result_list = []
+        count = 0
+        error_list = []
 
-    repCondVar = np.append(np.reshape(xvalue, (len(xvalue), 1)), np.repeat(
-        np.matrix(condVar), nx, axis=0), axis=1)
+        for i in tqdm(range(self.dataset.num_stations)):
+            density = self.cond_sp_vine(
+                cond_var=self.dataset.neighbourhoods_ln[i]['ln2'],
+                h=self.distances_within_trees[i])
 
-    density = dCopula(repCondVar, spVine, spDepth,
-                      models, super_bin_means_cut, h, nx)
-    left = max(0, 2*density[0] - density[1])
-    right = max(0, 2*density[nx-1] - density[nx-2])
-    density_extended = np.append(np.append(left, density), right)
+            density_list.append(density)
+            integration_constant = integrate.simpson(density, xvals_extended)
+            integration_constant_list.append(integration_constant)
 
-    return density_extended
+            result = integrate.simpson(((self.dataset.frozen_lognorm.ppf(
+                xvals) * density[1:len(xvals)+1]) / integration_constant), xvals)
+            result_list.append(result)
+            #print("Data point " + str(i))
+            if (result > 2000):
+                print(i, result)
+                error_list.append(result)
+                count += 1
 
+        df_result = pd.DataFrame()
+        df_result[self.dataset.variable] = self.dataset.df[self.dataset.variable]
+        df_result["result"] = (result_list)
+        #df_result["result"] = df_result["result"]
+        df_result = df_result[~df_result['result'].isin(error_list)]
 
-def calculate_predictions(list_neighbourhood_ln, df, super_cops, super_model_list,
-                          super_bin_means_cut, neigh_size, frozen_lognorm, h_big,
-                          number_of_stations
-                          ):
+        print("Final Result: " +
+              str(np.median(abs(result_list - self.dataset.df[self.dataset.variable]))))
+        print("Number of errors: " + str(count))
+        self.df_result = df_result
 
-    xvals = build_xvalue(1000)
-    xvals_extended = np.append(np.append([0], xvals), [1])
+    def get_results(self):
+        print("Median Absolute Error: " +
+              str(np.median(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
+        print("Mean Absolute Error: " +
+              str(np.mean(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
+        print("Mean Squared Error: " +
+              str(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2)))
+        print("Root Mean Squared Error: " +
+              str(np.sqrt(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2))))
 
-    density_list = []
-    integration_constant_list = []
-    result_list = []
-    count = 0
-    error_list = []
+    def plot_original_data(self):
 
-    for i in range(number_of_stations):
-        density = condSpVine(
-            condVar=list_neighbourhood_ln[i]['ln2'], h=h_big[i],
-            spVine=super_cops, models=super_model_list, spDepth=neigh_size,
-            super_bin_means_cut=super_bin_means_cut
-        )
+        plt.scatter(self.dataset.df["x"], self.dataset.df["y"],
+                    c=self.df_result[self.dataset.variable], cmap=plt.cm.gnuplot2)
+        # get current axes
+        ax = plt.gca()
 
-        density_list.append(density)
-        integration_constant = integrate.simpson(density, xvals_extended)
-        integration_constant_list.append(integration_constant)
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.title("Original Data")
+        # hide x-axis
+        ax.get_xaxis().set_visible(False)
 
-        result = integrate.simpson(((frozen_lognorm.ppf(
-            xvals) * density[1:len(xvals)+1]) / integration_constant), xvals)
-        result_list.append(result)
-        print("Data point " + str(i))
-        if (result > 2000):
-            print(i, result)
-            error_list.append(result)
-            count += 1
+        # hide y-axis
+        ax.get_yaxis().set_visible(False)
 
-    df_result = pd.DataFrame()
-    df_result["zinc"] = df["zinc"]
-    df_result["result"] = (result_list)
-    #df_result["result"] = df_result["result"]
-    df_result = df_result[~df_result['result'].isin(error_list)]
+        plt.colorbar()
+        plt.show()
 
-    print("Final Result: " + str(np.median(abs(result_list - df["zinc"]))))
-    print("Number of errors: " + str(count))
+    def plot_predicted_data(self):
+        plt.scatter(self.dataset.df["x"], self.dataset.df["y"],
+                    c=self.df_result["result"], cmap=plt.cm.gnuplot2)
+        # get current axes
+        ax = plt.gca()
 
-    return(df_result)
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.title("Prediction")
 
+        # hide x-axis
+        ax.get_xaxis().set_visible(False)
 
-def plot_original_data(df_result):
-    plt.scatter(df_result["x"], df_result["y"],
-                c=df_result["zinc"], cmap=plt.cm.gnuplot2)
-    # get current axes
-    ax = plt.gca()
+        # hide y-axis
+        ax.get_yaxis().set_visible(False)
 
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Original Data")
-    # hide x-axis
-    ax.get_xaxis().set_visible(False)
+        plt.colorbar()
+        plt.show()
 
-    # hide y-axis
-    ax.get_yaxis().set_visible(False)
+    def plot_result_statistics(self):
+        plt.scatter(
+            self.df_result[self.dataset.variable], self.df_result["result"])
+        plt.plot([0, 2000], [0, 2000], 'r')
+        plt.xlabel("Actual")
+        plt.ylabel("Predicted")
+        plt.title("Actual vs Predicted")
+        plt.show()
 
-    plt.colorbar()
-    plt.show()
+        plt.hist(self.df_result[self.dataset.variable] -
+                 self.df_result["result"], bins=50)
+        plt.xlabel("Error")
+        plt.ylabel("Frequency")
+        plt.title("Error Histogram")
+        plt.show()
 
+        plt.scatter(self.df_result[self.dataset.variable],
+                    self.df_result[self.dataset.variable] - self.df_result["result"])
+        plt.xlabel("Actual")
+        plt.ylabel("Error")
+        plt.title("Actual vs Error")
+        plt.show()
 
-def plot_predicted_data(df_result):
-    plt.scatter(df_result["x"], df_result["y"],
-                c=df_result["result"], cmap=plt.cm.gnuplot2)
-    # get current axes
-    ax = plt.gca()
+        plt.scatter(self.df_result["result"],
+                    self.df_result[self.dataset.variable] - self.df_result["result"])
+        plt.xlabel("Predicted")
+        plt.ylabel("Error")
+        plt.title("Predicted vs Error")
+        plt.show()
 
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Prediction")
-
-    # hide x-axis
-    ax.get_xaxis().set_visible(False)
-
-    # hide y-axis
-    ax.get_yaxis().set_visible(False)
-
-    plt.colorbar()
-    plt.show()
-
-
-def plot_result_statistics(df_result):
-    plt.scatter(df_result["zinc"], df_result["result"])
-    plt.plot([0, 2000], [0, 2000], 'r')
-    plt.xlabel("Actual")
-    plt.ylabel("Predicted")
-    plt.title("Actual vs Predicted")
-    plt.show()
-
-    plt.hist(df_result["zinc"] - df_result["result"], bins=50)
-    plt.xlabel("Error")
-    plt.ylabel("Frequency")
-    plt.title("Error Histogram")
-    plt.show()
-
-    plt.scatter(df_result["zinc"], df_result["zinc"] - df_result["result"])
-    plt.xlabel("Actual")
-    plt.ylabel("Error")
-    plt.title("Actual vs Error")
-    plt.show()
-
-    plt.scatter(df_result["result"], df_result["zinc"] - df_result["result"])
-    plt.xlabel("Predicted")
-    plt.ylabel("Error")
-    plt.title("Predicted vs Error")
-    plt.show()
-
-    print("Median Absolute Error: " +
-          str(np.median(abs(df_result["zinc"] - df_result["result"]))))
-    print("Mean Absolute Error: " +
-          str(np.mean(abs(df_result["zinc"] - df_result["result"]))))
-    print("Mean Squared Error: " +
-          str(np.mean((df_result["zinc"] - df_result["result"])**2)))
-    print("Root Mean Squared Error: " +
-          str(np.sqrt(np.mean((df_result["zinc"] - df_result["result"])**2))))
+        print("Median Absolute Error: " +
+              str(np.median(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
+        print("Mean Absolute Error: " +
+              str(np.mean(abs(self.df_result[self.dataset.variable] - self.df_result["result"]))))
+        print("Mean Squared Error: " +
+              str(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2)))
+        print("Root Mean Squared Error: " +
+              str(np.sqrt(np.mean((self.df_result[self.dataset.variable] - self.df_result["result"])**2))))
