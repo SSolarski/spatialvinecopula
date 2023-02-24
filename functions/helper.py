@@ -41,6 +41,7 @@ class DataSet:
 
     def construct_pairs(self):
 
+        self.df.reset_index(drop=True, inplace=True)
         # calculate distances between all pairs of points
         df_coordinates = self.df[["x", "y"]]
         self.distance_array = distance_matrix(df_coordinates, df_coordinates)
