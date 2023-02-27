@@ -57,7 +57,7 @@ class DataSet:
 
         distance_value = []
 
-        for _, row in df_whole.iterrows():
+        for _, row in tqdm(df_whole.iterrows()):
             distance_value.append(
                 self.distance_array[row["index1"]][row["index2"]])
 
@@ -80,7 +80,7 @@ class DataSet:
 
         self.neighbourhood_size = neighbourhood_size
         neigh_list = []
-        for i in range(0, self.num_stations):
+        for i in tqdm(range(0, self.num_stations)):
             curr_df = self.all_pairs[self.all_pairs["index1"]
                                      == (i)].sort_values(by=['distance'])
             curr_df = curr_df.reset_index(drop=True)
@@ -110,7 +110,7 @@ class DataSet:
             self.list_of_indexes, columns=["index1", "index2"])
 
         distance_value = []
-        for _, row in df_whole_ln.iterrows():
+        for _, row in tqdm(df_whole_ln.iterrows()):
             distance_value.append(
                 self.distance_array[row["index1"]][row["index2"]])
 
@@ -128,7 +128,7 @@ class DataSet:
 
         self.neighbourhood_size = neighbourhood_size
         neigh_list = []
-        for i in range(0, self.num_stations):
+        for i in tqdm(range(0, self.num_stations)):
             curr_df = self.all_pairs_ln[self.all_pairs_ln["index1"]
                                         == (i)].sort_values(by=['distance'])
             curr_df = curr_df.reset_index(drop=True)
