@@ -8,6 +8,7 @@ from scipy import stats
 from scipy.stats import lognorm
 from scipy import integrate
 from tqdm import tqdm
+import openturns as ot
 
 import pyvinecopulib as pv
 
@@ -135,6 +136,35 @@ class DataSet:
             neigh_list.append(curr_df.head(neighbourhood_size))
 
         self.neighbourhoods_ln = neigh_list
+
+    def calculate_kriging(self):
+        # testing the kriging algorithm
+        df = self.df
+        variable = self.variable
+        # Input points
+        coordinates_train = df[['x', 'y']].values
+        # Output points
+        variable_train = df[[variable]].values
+
+        # Fit
+        inputDimension = 2
+        basis = ot.ConstantBasisFactory(inputDimension).build()
+        covarianceModel = ot.SquaredExponential([1]*inputDimension, [1])
+        algo = ot.KrigingAlgorithm(
+            coordinates_train, variable_train, covarianceModel, basis)
+        algo.run()
+        result = algo.getResult()
+        krigingMetamodel = result.getMetaModel()
+
+        # Predict
+        coordinates = df[['x', 'y']].values  # A new latitude/longitude pair
+        prediction = krigingMetamodel(coordinates)
+
+        # calculate the mean absolute error
+        print("MAE:", np.mean(abs(df[variable].values - prediction)))
+        print("Bias: ", np.mean(df[variable].values - prediction))
+        print("RMSE: ", np.sqrt(
+            np.mean((df[variable].values - prediction)**2)))
 
 
 class SpatialCopula:
