@@ -1,31 +1,37 @@
-df_test = df_test[["x", "y"]]
-
-df_coordinates = dataset.df[["x", "y"]]
-current_point = df_test[['x', 'y']]
-distance_array = distance_matrix(df_coordinates, current_point)
-distance_df = pd.DataFrame(distance_array)
-distance_df = distance_df.T
-distance_df
+"""
+This was an attempt to create a neighbourhood for each test point
+Which would be used to calculate the prediction for the test points
+"""
 
 
-# for each test point create a neighbourhood
-prediction_neighbourhoods = []
-for station in range(df_test.shape[0]):
-    current_station = station
-    # print(current_station)
-    list_neighbourhood_temp = []
-    for i in range(neigh_size):
-        index1 = int(current_station)
-        index2 = int(distance_df.iloc[current_station].sort_values().index[i])
-        distance = distance_df.iloc[current_station].sort_values()[index2]
-        ln2 = dataset.df["log_normal"][index2]
-        list_for_df = [index1, index2, distance, ln2]
-        list_neighbourhood_temp.append(list_for_df)
-        # print(list_neighbourhood_temp)
-    new_neigh_df = pd.DataFrame(list_neighbourhood_temp, columns=[
-        "index1", "index2", "distance", "ln2"])
-    # print(new_neigh_df)
-    prediction_neighbourhoods.append(new_neigh_df)
+# df_test = df_test[["x", "y"]]
+
+# df_coordinates = dataset.df[["x", "y"]]
+# current_point = df_test[['x', 'y']]
+# distance_array = distance_matrix(df_coordinates, current_point)
+# distance_df = pd.DataFrame(distance_array)
+# distance_df = distance_df.T
+# distance_df
+
+
+# # for each test point create a neighbourhood
+# prediction_neighbourhoods = []
+# for station in range(df_test.shape[0]):
+#     current_station = station
+#     # print(current_station)
+#     list_neighbourhood_temp = []
+#     for i in range(neigh_size):
+#         index1 = int(current_station)
+#         index2 = int(distance_df.iloc[current_station].sort_values().index[i])
+#         distance = distance_df.iloc[current_station].sort_values()[index2]
+#         ln2 = dataset.df["log_normal"][index2]
+#         list_for_df = [index1, index2, distance, ln2]
+#         list_neighbourhood_temp.append(list_for_df)
+#         # print(list_neighbourhood_temp)
+#     new_neigh_df = pd.DataFrame(list_neighbourhood_temp, columns=[
+#         "index1", "index2", "distance", "ln2"])
+#     # print(new_neigh_df)
+#     prediction_neighbourhoods.append(new_neigh_df)
 
 # Step 1: find all the distances between current test point and all train points
 # step 2: sort the distances
