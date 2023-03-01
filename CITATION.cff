@@ -1,10 +1,10 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
-- family-names: "Stefan"
-  given-names: "Solarski"
-- family-names: "Christian"
-  given-names: "Soraruf"
+- family-names: "Solarski"
+  given-names: "Stefan"
+- family-names: "Soraruf"
+  given-names: "Christian"
 title: "spatialvinecopula"
 version: 1.0.0
 doi: 10.5281/zenodo.1234
